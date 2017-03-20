@@ -1,5 +1,5 @@
 /*****************************/
-/* Titel: VOIP_Timer_ser.c   */
+/* Titel: VOIP_Timer_cli.c   */
 /*   Author: Khanjan Desai   */
 /*   Date  : March 4,2016    */
 /* VOIP server recieve voice */
@@ -9,9 +9,6 @@
 
 // Compile : gcc filename.c -lpulse -lpulse-simple -o filename //
 // Run	   : ./filename <IP> <PORT>
-
-
-
 
 
 #include <setjmp.h>
@@ -32,131 +29,119 @@
 #include <errno.h>
 #define BUFSIZE 1024
 
-int listenfd = 0, connfd = 0;
-pa_simple *rx_play = NULL;
+int sockfd = 0, n,i;
+pa_simple *record_tx = NULL;
 int error; 
-	
+struct sockaddr_in serv_addr; 
 
+unsigned char buf[BUFSIZE];
 
-static jmp_buf buf;
 void signal_handler (int sig)
 {
-	unsigned char buf[BUFSIZE];
-	int r=0;
-
 	if(sig == SIGINT)
 	{
 		printf("Shut down");
-		int ret = close(listenfd);
+		int ret = close(sockfd);
 		sleep(1);
-		if(ret == -1)	printf("Closing Error");
-		exit(0);
-	}
-	if(sig ==SIGALRM)
-	{
-		r = recv(connfd,buf,BUFSIZE,0);
-		if(r <= 0)
-		{
-			perror("Rx error\n");
-    	  	//System reconnect		
-			connfd = accept(listenfd, (struct sockaddr*)NULL, NULL);
-    		if (connfd==-1)
-			{
-				perror("Error:");
-				exit(1);
-			}   
-			
+		if(ret == -1)	
+		{	
+			printf("Closing Error");
 		}
-		// Play data
-		if(pa_simple_write(rx_play,buf,BUFSIZE,&error) < 0)
+		exit(1);
+	}
+	if(sig == SIGALRM)
+	{
+		// Record audio
+		if (pa_simple_read(record_tx,buf,BUFSIZE,&error) < 0)
 		{
-			printf("pa_simple_right() failed: %s\n",pa_strerror(error));
-			exit(1);		
+			printf("pa_simple_read() failes: %s\n",pa_strerror(error));
+			exit(0);
+		}
+		//send if using socket
+		if(send(sockfd,buf,BUFSIZE,0) < 0)
+		{
+			perror("Send failed\n");
+			exit(0);
 		}
 	}
 }
 
-
-int main(int argc, char *argv[])
-{		
-	// Read IP and Port address
+int main (int argc, char ** argv)
+{
+	// Read IP and port
     char * ip = argv[1];
-    int ip2= atoi(argv[2]);
+    int ip1 = atoi(argv[2]);	
 
-   	struct sockaddr_in serv_addr; 
-	
-	listenfd = socket(AF_INET, SOCK_STREAM, 0);
-   	memset(&serv_addr, '0', sizeof(serv_addr));
-   	serv_addr.sin_family = AF_INET;
-   	serv_addr.sin_addr.s_addr = inet_addr(ip);
-   	serv_addr.sin_port = htons(ip2);
-	
-	// Signal Handler 
-  	if(signal(SIGINT,signal_handler) == SIG_ERR)
+    // Signal Handler for Timer
+    if(signal(SIGALRM,signal_handler)==SIG_ERR)
     {
-		printf("Cant recieve signal");
-   	}
-   	// Signal Handler for Timer
-	if(signal(SIGALRM,signal_handler)==SIG_ERR)
+    	perror("Error:");
+    	exit(1);
+    }
+	//Signal Handler for ctrl+c
+    if(signal(SIGINT,signal_handler)==SIG_ERR)
+    {
+    	perror("Error:");
+    	exit(1);
+    }
+	
+
+        // Error check for sockfd
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))<0)
 	{
-		perror("Error:");
+		perror("sockfd error:");
+		exit(1);
 	}
-	// Error handler for bind
-   	if(bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr))<0)
-	{
-    		perror("Error in binding");
-	    	return 1;
-	} 
-	// Error Handler for listenfd
-   	if(listen(listenfd, 10)<0)
-   	{
-   		perror("Error in listening");
-   		return 1;
-   	}
-	// If all correct start server
-    	printf("Waiting for call...\n");
+    
+    memset(&serv_addr, '0', sizeof(serv_addr)); 
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = inet_addr(ip);	// Give IP
+    serv_addr.sin_port = htons(ip1); 		// Give Port
+
+
+     
+    int con;
+	//Error check for Connect    
+    if((con  = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr))) < 0)
+    {	
+    	perror("Error in connect call :");
+    	return 1;
+    }
+
 	//create Spec that defines samplerate, channels and format
 	const pa_sample_spec spec = {
 		.format = PA_SAMPLE_S16LE,
-        	.rate = 44100,
-        	.channels = 2
+       	.rate = 44100,
+       	.channels = 2
 	};
-
-	// Error handling for recieving Client IP
-    	
-    	if ((connfd = accept(listenfd, (struct sockaddr*)NULL, NULL))<0)
-	{
-		perror("Connect error:");   
-		exit(0);
-	}
-        
+	
 
 	// Create new stream to play
-	if((rx_play = pa_simple_new(NULL,"VOIP_rx.c",PA_STREAM_PLAYBACK,NULL,"PLAYBACK",&spec,NULL,NULL,&error)) == NULL)
+	if ((record_tx = pa_simple_new(NULL,"test3_cli.c",PA_STREAM_RECORD,NULL,"record",&spec,NULL,NULL,&error))== NULL)
 	{
-		printf("pa_simple_new() failed: %s\n",pa_strerror(error));
+		perror("ERROR connection:");
 		exit(0);
 	}
 
-		
+	// Starting clock at 10 us and repeat every 10us.
     ualarm (10, 10);
-    
-	
-	while(1)
-		pause();
-	
-	/*// Play till end
-	if(pa_simple_drain(rx_play, &error) < 0)
+    while(1)
+    	pause();
+    	
+
+	// Relese Memory
+	if(record_tx)
 	{
-		printf("pa_simple_drain() failed: %s\n", pa_strerror(error));
-		exit(0);
-	}*/
-	
-	// Free the space
-	if (rx_play)
-        {
-		pa_simple_free(rx_play);	
-	}	
-//	close(connfd);			
-}
+		free(record_tx);
+	}
+
+
+    close(sockfd);
+    pa_simple_free(record_tx);
+
+
+    return 0;
+}	
+
 
